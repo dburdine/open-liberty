@@ -22,13 +22,15 @@ import java.security.PrivilegedExceptionAction;
 import java.util.HashMap;
 import java.util.Map;
 
-import org.omg.CORBA.Any;
-import org.omg.CORBA.ORB;
-import org.omg.CORBA.UserException;
+import javax.net.ssl.SSLException;
+
 import org.omg.CSI.EstablishContext;
 import org.omg.CSI.SASContextBody;
 import org.omg.CSI.SASContextBodyHelper;
 import org.omg.CSIIOP.TransportAddress;
+import org.omg.CORBA.Any;
+import org.omg.CORBA.ORB;
+import org.omg.CORBA.UserException;
 import org.omg.IOP.Codec;
 import org.omg.IOP.SecurityAttributeService;
 import org.omg.IOP.ServiceContext;
@@ -38,7 +40,6 @@ import com.ibm.ejs.ras.TraceNLS;
 import com.ibm.websphere.ras.Tr;
 import com.ibm.websphere.ras.TraceComponent;
 import com.ibm.websphere.ras.annotation.Trivial;
-import com.ibm.websphere.ssl.SSLException;
 import com.ibm.ws.security.csiv2.config.ssl.SSLConfig;
 import com.ibm.ws.security.csiv2.config.tss.ServerTransportAddress;
 import com.ibm.ws.security.csiv2.util.SecurityServices;
@@ -141,14 +142,14 @@ public class CSSCompoundSecMechConfig implements Serializable {
     private boolean extractSSLTransportForEachAddress(TSSCompoundSecMechConfig requirement) {
 
         //from the requirement get the addresses
-	Object transportConfig = requirement.getTransport_mech();
-	
-	//If SSL is not enabled, return false 
-	if (!(transportConfig instanceof TSSSSLTransportConfig)) {
-	    return false;
-	}
+        Object transportConfig = requirement.getTransport_mech();
 
-        TransportAddress[] addresses = ((TSSSSLTransportConfig)transportConfig).getTransportAddresses();
+        //If SSL is not enabled, return false
+        if (!(transportConfig instanceof TSSSSLTransportConfig)) {
+            return false;
+        }
+
+        TransportAddress[] addresses = ((TSSSSLTransportConfig) transportConfig).getTransportAddresses();
         if (addresses.length == 0) {
             return false;
         }
@@ -324,20 +325,23 @@ public class CSSCompoundSecMechConfig implements Serializable {
 
         msg.client_context_id = 0;
         msg.client_authentication_token = as_mech.encode(requirement.getAs_mech(), sas_mech, ri, codec);
-        msg.authorization_token = sas_mech.encodeAuthorizationElement();
-        msg.identity_token = sas_mech.encodeIdentityToken(requirement.getSas_mech(), codec);
+        if (!(msg.client_authentication_token.length == 0 && as_mech instanceof com.ibm.ws.security.csiv2.server.config.css.ClientLTPAMechConfig)) {
+            msg.authorization_token = sas_mech.encodeAuthorizationElement();
+            msg.identity_token = sas_mech.encodeIdentityToken(requirement.getSas_mech(), codec);
 
-        ServiceContext context = new ServiceContext();
+            ServiceContext context = new ServiceContext();
 
-        SASContextBody sas = new SASContextBody();
-        sas.establish_msg(msg);
-        Any sas_any = ORB.init().create_any();
-        SASContextBodyHelper.insert(sas_any, sas);
-        context.context_data = codec.encode_value(sas_any);
+            SASContextBody sas = new SASContextBody();
+            sas.establish_msg(msg);
+            Any sas_any = ORB.init().create_any();
+            SASContextBodyHelper.insert(sas_any, sas);
+            context.context_data = codec.encode_value(sas_any);
 
-        context.context_id = SecurityAttributeService.value;
+            context.context_id = SecurityAttributeService.value;
 
-        return context;
+            return context;
+        }
+        return null;
     }
 
     @Override

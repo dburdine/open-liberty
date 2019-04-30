@@ -1,5 +1,5 @@
 /*******************************************************************************
- * Copyright (c) 2015 IBM Corporation and others.
+ * Copyright (c) 2015, 2019 IBM Corporation and others.
  * All rights reserved. This program and the accompanying materials
  * are made available under the terms of the Eclipse Public License v1.0
  * which accompanies this distribution, and is available at
@@ -70,117 +70,145 @@ final class ClientSecurityInterceptor extends LocalObject implements ClientReque
     public void send_request(ClientRequestInfo ri) {
         int requestId = ri.request_id();
         boolean isDebug = TraceComponent.isAnyTracingEnabled() && tc.isDebugEnabled();
-        try {
-            /*
-             * send_request() intercept point allows to query request information and
-             * modify the service context before the request is actually sent to the server.
-             * By the time the flow comes here all the necessary handshake would have happened.
-             * So, before proceeding we need to cross check the existence of all policy configurations
-             * on client and server side.
-             */
+//OLGH7236        try {
+        /*
+         * send_request() intercept point allows to query request information and
+         * modify the service context before the request is actually sent to the server.
+         * By the time the flow comes here all the necessary handshake would have happened.
+         * So, before proceeding we need to cross check the existence of all policy configurations
+         * on client and server side.
+         */
 
+        if (isDebug) {
+            Tr.debug(tc, "Checking if target " + ri.operation() + " has a security policy for request id: " + requestId + ".");
+        }
+
+        TaggedComponent taggedComponent = ri.get_effective_component(TAG_CSI_SEC_MECH_LIST.value);
+        /* Get the mechanism configuration for the server side. */
+        TSSCompoundSecMechListConfig tcsml = TSSCompoundSecMechListConfig.decodeIOR(codec, taggedComponent);
+
+        if (isDebug) {
+            Tr.debug(tc, "Target has a security policy  for request id: " + requestId + ".");
+        }
+
+        //set unAuthenticate subject for going outbound as needed
+        setUnauthenticatedSubjectIfNeeded();
+
+        ClientPolicy clientPolicy = (ClientPolicy) ri.get_request_policy(ClientPolicyFactory.POLICY_TYPE);
+
+        /*
+         * If no security policy is defined on the client side, clientPolicy will be missing. In this case
+         * we will log a warning and will not proceed further.
+         */
+        if (clientPolicy == null) {
+            buildPolicyErrorMessage("CSIv2_CLIENT_POLICY_NULL_ERROR",
+                                    "CWWKS9538E: The client security policy is null for request id: {0}.",
+                                    requestId);
+            return;
+        }
+
+        CSSConfig config = clientPolicy.getConfig();
+        /*
+         * If no CSIv2 related client configuration are available within client policy, config will be null.
+         * In this case we will log a warning and will not proceed further.
+         */
+        if (config == null) {
             if (isDebug) {
-                Tr.debug(tc, "Checking if target " + ri.operation() + " has a security policy for request id: " + requestId + ".");
+                Tr.debug(tc, "There is no client configuration found in the client security policy for request id: " + requestId + ".");
             }
+            return;
+        }
 
-            TaggedComponent taggedComponent = ri.get_effective_component(TAG_CSI_SEC_MECH_LIST.value);
-            /* Get the mechanism configuration for the server side. */
-            TSSCompoundSecMechListConfig tcsml = TSSCompoundSecMechListConfig.decodeIOR(codec, taggedComponent);
+        /*
+         * If the program flow comes to this point, it means client policy and CSSConfig are available.
+         * So let us log this as a information for debugging.
+         */
+        if (isDebug) {
+            Tr.debug(tc, "Client has a security policy for request id: " + requestId + ".");
+        }
 
+        /*
+         * At this point we have both client and server configurations. Let us check for the compatibility.
+         * Here all the compatible mechanisms are obtained.
+         */
+        LinkedList<CompatibleMechanisms> compatibleMechanismsList = config.findCompatibleList(tcsml);
+
+        /*
+         * If there are no compatible mechanisms between client and server,
+         * log the warning and do not proceed any further.
+         */
+        if (compatibleMechanismsList.isEmpty()) {
+            // TODO: Determine if an exception needs to be thrown instead of continuing with the request.
             if (isDebug) {
-                Tr.debug(tc, "Target has a security policy  for request id: " + requestId + ".");
+                Tr.debug(tc, "Ensure that there is a client security policy specified in the configuration file that satisfies the server security policy request id: "
+                             + requestId + ".");
             }
+            return;
+        }
 
-            //set unAuthenticate subject for going outbound as needed
-            setUnauthenticatedSubjectIfNeeded();
+        Iterator<CompatibleMechanisms> compatiblePoliciesIterator = compatibleMechanismsList.iterator();
+        while (compatiblePoliciesIterator.hasNext()) {
+            try {
+                CompatibleMechanisms compatibleMechanisms = compatiblePoliciesIterator.next();
+                CSSCompoundSecMechConfig clientMechConfig = compatibleMechanisms.getCSSCompoundSecMechConfig();
+                TSSCompoundSecMechConfig targetMechConfig = compatibleMechanisms.getTSSCompoundSecMechConfig();
+                ServiceContext context = clientMechConfig.generateServiceContext(codec, targetMechConfig, ri);
 
-            ClientPolicy clientPolicy = (ClientPolicy) ri.get_request_policy(ClientPolicyFactory.POLICY_TYPE);
-
-            /*
-             * If no security policy is defined on the client side, clientPolicy will be missing. In this case
-             * we will log a warning and will not proceed further.
-             */
-            if (clientPolicy == null) {
-                buildPolicyErrorMessage("CSIv2_CLIENT_POLICY_NULL_ERROR",
-                                        "CWWKS9538E: The client security policy is null for request id: {0}.",
-                                        requestId);
-                return;
-            }
-
-            CSSConfig config = clientPolicy.getConfig();
-            /*
-             * If no CSIv2 related client configuration are available within client policy, config will be null.
-             * In this case we will log a warning and will not proceed further.
-             */
-            if (config == null) {
-                if (isDebug) {
-                    Tr.debug(tc, "There is no client configuration found in the client security policy for request id: " + requestId + ".");
+                /* For any reason, if the context failed to be created, we have to log a warning message. */
+                if (context != null) {
+                    if (isDebug) {
+                        Tr.debug(tc, "Msg context id: " + context.context_id + " for request id: " + requestId + ".");
+                        Tr.debug(tc, "Encoded msg: 0x" + Util.byteToString(context.context_data) + " for request id: " + requestId + ".");
+                    }
+                    ri.add_request_service_context(context, true);
+                } else {
+                    if (isDebug) {
+                        Tr.debug(tc, "Could not establish a valid security service context for request id " + requestId
+                                     + " using the following client and target configs. We will look for additional compatible configs and retry.\n" +
+                                     "Client Config:\n" + clientMechConfig +
+                                     "Target Config:\n" + targetMechConfig);
+                    }
                 }
-                return;
-            }
-
-            /*
-             * If the program flow comes to this point, it means client policy and CSSConfig are available.
-             * So let us log this as a information for debugging.
-             */
-            if (isDebug) {
-                Tr.debug(tc, "Client has a security policy for request id: " + requestId + ".");
-            }
-
-            /*
-             * At this point we have both client and server configurations. Let us check for the compatibility.
-             * Here all the compatible mechanisms are obtained.
-             */
-            LinkedList<CompatibleMechanisms> compatibleMechanismsList = config.findCompatibleList(tcsml);
-
-            /*
-             * If there are no compatible mechanisms between client and server,
-             * log the warning and do not proceed any further.
-             */
-            if (compatibleMechanismsList.isEmpty()) {
-                // TODO: Determine if an exception needs to be thrown instead of continuing with the request.
+            } catch (BAD_PARAM bp) {
                 if (isDebug) {
-                    Tr.debug(tc, "Ensure that there is a client security policy specified in the configuration file that satisfies the server security policy request id: "
-                                 + requestId + ".");
+                    Tr.debug(tc, "No security service context found for request id: " + requestId
+                                 + " using the following client and target configs. We will look for additional compatible configs and retry." + bp);
                 }
-                return;
-            }
-
-            Iterator<CompatibleMechanisms> compatiblePoliciesIterator = compatibleMechanismsList.iterator();
-            CompatibleMechanisms compatibleMechanisms = compatiblePoliciesIterator.next();
-            CSSCompoundSecMechConfig clientMechConfig = compatibleMechanisms.getCSSCompoundSecMechConfig();
-            TSSCompoundSecMechConfig targetMechConfig = compatibleMechanisms.getTSSCompoundSecMechConfig();
-            ServiceContext context = clientMechConfig.generateServiceContext(codec, targetMechConfig, ri);
-
-            /* For any reason, if the context failed to be created, we have to log a warning message. */
-            if (context != null) {
+            } catch (Exception ue) {
+                buildPolicyErrorMessage("CSIv2_CLIENT_UNEXPECTED_EXCEPTION_ERROR",
+                                        "CWWKS9542E: There was an unexpected exception while attempting to send an outbound CSIv2 request for request id {0}. The exception message is {1}",
+                                        requestId, ue.getMessage());
                 if (isDebug) {
-                    Tr.debug(tc, "Msg context id: " + context.context_id + " for request id: " + requestId + ".");
-                    Tr.debug(tc, "Encoded msg: 0x" + Util.byteToString(context.context_data) + " for request id: " + requestId + ".");
+                    Tr.debug(tc,
+                             "There was an unexpected exception while attempting to send an outbound CSIv2 request using the following client and target configs. We will look for additional compatible configs and retry.",
+                             ue);
                 }
-                ri.add_request_service_context(context, true);
-            } else {
-                if (isDebug) {
-                    Tr.debug(tc, "No security service context found for request id " + requestId + ".");
+
+                if (ue instanceof NO_PERMISSION) {
+                    throw (NO_PERMISSION) ue;
                 }
-            }
-
-        } catch (BAD_PARAM bp) {
-            if (isDebug) {
-                Tr.debug(tc, "No security service context found for request id: " + requestId + ".");
-            }
-        } catch (Exception ue) {
-            buildPolicyErrorMessage("CSIv2_CLIENT_UNEXPECTED_EXCEPTION_ERROR",
-                                    "CWWKS9542E: There was an unexpected exception while attempting to send an outbound CSIv2 request for request id {0}. The exception message is {1}",
-                                    requestId, ue.getMessage());
-            if (isDebug) {
-                Tr.debug(tc, "There was an unexpected exception while attempting to send an outbound CSIv2 request", ue);
-            }
-
-            if (ue instanceof NO_PERMISSION) {
-                throw (NO_PERMISSION) ue;
             }
         }
+/*
+ * OLGH7236
+ * } catch (BAD_PARAM bp) {
+ * if (isDebug) {
+ * Tr.debug(tc, "No security service context found for request id: " + requestId + ".");
+ * }
+ * } catch (Exception ue) {
+ * buildPolicyErrorMessage("CSIv2_CLIENT_UNEXPECTED_EXCEPTION_ERROR",
+ * "CWWKS9542E: There was an unexpected exception while attempting to send an outbound CSIv2 request for request id {0}. The exception message is {1}",
+ * requestId, ue.getMessage());
+ * if (isDebug) {
+ * Tr.debug(tc, "There was an unexpected exception while attempting to send an outbound CSIv2 request", ue);
+ * }
+ *
+ * if (ue instanceof NO_PERMISSION) {
+ * throw (NO_PERMISSION) ue;
+ * }
+ * }
+ * OLGH7236
+ */
     }
 
     /**
@@ -208,10 +236,10 @@ final class ClientSecurityInterceptor extends LocalObject implements ClientReque
      * Receives the message key like "CSIv2_COMMON_AUTH_LAYER_DISABLED"
      * from this key we extract the message from the NLS message bundle
      * which contains the message along with the CWWKS message code.
-     * 
+     *
      * Example:
      * CSIv2_CLIENT_POLICY_DOESNT_EXIST_FAILED=CWWKS9568E: The client security policy does not exist.
-     * 
+     *
      * @param msgCode
      */
     private void buildPolicyErrorMessage(String msgKey, String defaultMessage, Object... arg1) {
