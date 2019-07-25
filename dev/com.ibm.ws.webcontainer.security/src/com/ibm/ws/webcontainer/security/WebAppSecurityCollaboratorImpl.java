@@ -653,10 +653,19 @@ public class WebAppSecurityCollaboratorImpl implements IWebAppSecurityCollaborat
          */
         if (webReply == null) {
             performPrecludedAccessTests(webRequest, webSecurityContext, uriName);
-            optionallyAuthenticateUnprotectedResource(webRequest);
+            AuthenticationResult authResult = optionallyAuthenticateUnprotectedResource(webRequest);
 
-            webReply = determineWebReply(receivedSubject, uriName, webRequest);
-
+            // OLGH8152
+            webReply = performInitialChecks(webRequest, uriName);
+            if (webReply != null) {
+                logAuditEntriesBeforeAuthn(webReply, receivedSubject, uriName, webRequest);
+                //return webReply;
+            } else {
+                if (authResult == null) {
+                    authResult = authenticateRequest(webRequest);
+                }
+                webReply = determineWebReply(receivedSubject, uriName, webRequest, authResult);
+            }
         }
         validateWebReply(webSecurityContext, webReply);
 
@@ -783,13 +792,15 @@ public class WebAppSecurityCollaboratorImpl implements IWebAppSecurityCollaborat
      *
      * @param webRequest
      */
-    public void optionallyAuthenticateUnprotectedResource(WebRequest webRequest) {
+    public AuthenticationResult optionallyAuthenticateUnprotectedResource(WebRequest webRequest) {
+        AuthenticationResult authResult = null;
         if (webAppSecConfig.isUseAuthenticationDataForUnprotectedResourceEnabled() &&
             (unprotectedResource(webRequest) == PERMIT_REPLY) &&
             needToAuthenticateSubject(webRequest)) {
             webRequest.disableFormLoginRedirect();
-            setAuthenticatedSubjectIfNeeded(webRequest);
+            authResult = setAuthenticatedSubjectIfNeeded(webRequest);
         }
+        return authResult;
     }
 
     protected boolean needToAuthenticateSubject(WebRequest webRequest) {
@@ -829,12 +840,13 @@ public class WebAppSecurityCollaboratorImpl implements IWebAppSecurityCollaborat
         return webReply;
     }
 
-    public void setAuthenticatedSubjectIfNeeded(WebRequest webRequest) {
+    public AuthenticationResult setAuthenticatedSubjectIfNeeded(WebRequest webRequest) {
         AuthenticationResult authResult = authenticateRequest(webRequest);
         if (authResult != null && authResult.getStatus() == AuthResult.SUCCESS) {
             SubjectManager subjectManager = new SubjectManager();
             subjectManager.setCallerSubject(authResult.getSubject());
         }
+        return authResult;
     }
 
     private void performDelegation(String servletName) {
@@ -941,28 +953,6 @@ public class WebAppSecurityCollaboratorImpl implements IWebAppSecurityCollaborat
         if (delegationSubject != null) {
             subjectManager.setInvocationSubject(delegationSubject);
         }
-    }
-
-    /**
-     * This method does:
-     * 1. pre-authentication checks
-     * 2. Authentication
-     * 3. Authorization
-     *
-     * @param receivedSubject
-     * @param uriName
-     * @param webRequest
-     * @return Non-null WebReply
-     */
-    public WebReply determineWebReply(Subject receivedSubject, String uriName, WebRequest webRequest) {
-
-        WebReply webReply = performInitialChecks(webRequest, uriName);
-        if (webReply != null) {
-            logAuditEntriesBeforeAuthn(webReply, receivedSubject, uriName, webRequest);
-            return webReply;
-        }
-        AuthenticationResult authResult = authenticateRequest(webRequest);
-        return determineWebReply(receivedSubject, uriName, webRequest, authResult);
     }
 
     /**
