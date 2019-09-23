@@ -50,6 +50,7 @@ import com.ibm.ws.security.registry.UserRegistry;
 import com.ibm.ws.security.registry.UserRegistryService;
 import com.ibm.wsspi.kernel.service.utils.AtomicServiceReference;
 import com.ibm.wsspi.security.token.AttributeNameConstants;
+import java.security.cert.X509Certificate;
 
 @TraceOptions(messageBundle = "com.ibm.ws.security.authentication.internal.resources.AuthenticationMessages")
 public class AuthenticationServiceImpl implements AuthenticationService {
@@ -329,12 +330,17 @@ public class AuthenticationServiceImpl implements AuthenticationService {
                 if (ssoTokenBytes != null) {
                     subject = findSubjectByTokenContents(authCacheService, null, ssoTokenBytes, authenticationData);
                 } else {
-                    String userid = (String) authenticationData.get(AuthenticationData.USERNAME);
-                    String password = getPassword((char[]) authenticationData.get(AuthenticationData.PASSWORD));
-                    if (userid != null && password != null) {
-                        subject = findSubjectByUseridAndPassword(authCacheService, userid, password);
-                    } else if (partialSubject != null) {
-                        subject = findSubjectBySubjectHashtable(authCacheService, partialSubject);
+                    X509Certificate[] certChain = (X509Certificate[])authenticationData.get(AuthenticationData.CERTCHAIN);
+                    if (certChain != null) {
+                        subject = findSubjectByX509Cert(authCacheService, certChain);
+                    } else {
+                        String userid = (String) authenticationData.get(AuthenticationData.USERNAME);
+                        String password = getPassword((char[]) authenticationData.get(AuthenticationData.PASSWORD));
+                        if (userid != null && password != null) {
+                            subject = findSubjectByUseridAndPassword(authCacheService, userid, password);
+                        } else if (partialSubject != null) {
+                            subject = findSubjectBySubjectHashtable(authCacheService, partialSubject);
+                        }
                     }
                 }
             }
@@ -342,6 +348,12 @@ public class AuthenticationServiceImpl implements AuthenticationService {
         return subject;
     }
 
+    private Subject findSubjectByX509Cert(AuthCacheService authCacheService, X509Certificate[] certChain) {
+        int certHash = ((java.security.cert.Certificate) certChain[0]).hashCode();
+        return authCacheService.getSubject(certHash);
+    }
+
+    
     /**
      * @param authCacheService An authentication cache service
      * @param token The cache key, can be either a byte[] (SSO Token) or String (SSO Token Base64 encoded)
@@ -506,7 +518,11 @@ public class AuthenticationServiceImpl implements AuthenticationService {
             if (userid != null && password != null) {
                 authCacheService.insert(authenticatedSubject, userid, password);
             } else {
-                authCacheService.insert(authenticatedSubject);
+                if (AuthenticationData.CERTCHAIN != null) {
+                    authCacheService.insert(authenticatedSubject, (X509Certificate[])authenticationData.get(AuthenticationData.CERTCHAIN));
+                } else {
+                    authCacheService.insert(authenticatedSubject);
+                }
             }
         }
     }
