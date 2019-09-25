@@ -17,6 +17,7 @@ import static org.junit.Assert.assertSame;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 
+import java.security.cert.X509Certificate;
 import java.util.HashMap;
 import java.util.Hashtable;
 import java.util.Map;
@@ -211,6 +212,7 @@ public class AuthenticationServiceTest {
         mockery.checking(new Expectations() {
             {
                 allowing(authCacheService).insert(with(any(Subject.class)), with(GOOD_USER), with(GOOD_USER_PWD));
+                allowing(authCacheService).insert(with(any(Subject.class)), with(any(X509Certificate[].class)));
                 allowing(authCacheService).insert(with(any(Subject.class)));
             }
         });
