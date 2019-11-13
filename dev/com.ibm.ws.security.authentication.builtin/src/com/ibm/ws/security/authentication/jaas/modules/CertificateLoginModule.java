@@ -237,6 +237,8 @@ public class CertificateLoginModule extends ServerCommonLoginModule implements L
         username = x509Subject.getName();
         authenticatedId = x509Subject.getName();
         addCredentials(accessId);
+        //OLGH8933: We don't want to cache collective certificate Subjects
+        plugin.setCacheCollectiveCertificate(false);
     }
 
     /**
