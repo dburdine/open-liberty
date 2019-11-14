@@ -21,6 +21,9 @@ import javax.security.auth.login.LoginException;
 
 import org.osgi.framework.ServiceReference;
 import org.osgi.service.component.ComponentContext;
+import org.osgi.service.component.annotations.Reference;
+import org.osgi.service.component.annotations.ReferencePolicy;
+import org.osgi.service.component.annotations.ReferencePolicyOption;
 
 import com.ibm.ejs.ras.TraceNLS;
 import com.ibm.websphere.ras.Tr;
@@ -38,7 +41,9 @@ import com.ibm.ws.security.authentication.UserRevokedException;
 import com.ibm.ws.security.authentication.WSAuthenticationData;
 import com.ibm.ws.security.authentication.cache.AuthCacheService;
 import com.ibm.ws.security.authentication.internal.cache.keyproviders.BasicAuthCacheKeyProvider;
+//import com.ibm.ws.security.authentication.internal.cache.keyproviders.CollectiveAuthenticationPlugin;
 import com.ibm.ws.security.authentication.internal.cache.keyproviders.CustomCacheKeyProvider;
+//import com.ibm.ws.security.authentication.internal.cache.keyproviders.Reference;
 import com.ibm.ws.security.authentication.internal.jaas.JAASServiceImpl;
 import com.ibm.ws.security.authentication.utility.SubjectHelper;
 import com.ibm.ws.security.credentials.CredentialsService;
@@ -50,6 +55,8 @@ import com.ibm.ws.security.registry.UserRegistry;
 import com.ibm.ws.security.registry.UserRegistryService;
 import com.ibm.wsspi.kernel.service.utils.AtomicServiceReference;
 import com.ibm.wsspi.security.token.AttributeNameConstants;
+import java.security.cert.X509Certificate;
+import com.ibm.ws.security.authentication.collective.CollectiveAuthenticationPlugin;
 
 @TraceOptions(messageBundle = "com.ibm.ws.security.authentication.internal.resources.AuthenticationMessages")
 public class AuthenticationServiceImpl implements AuthenticationService {
@@ -64,12 +71,16 @@ public class AuthenticationServiceImpl implements AuthenticationService {
     static final String KEY_CREDENTIALS_SERVICE = "credentialsService";
     private static final String LTPA_OID = "oid:1.3.18.0.2.30.2";
     private static final String JWT_OID = "oid:1.3.18.0.2.30.3"; // ?????
+    
+    private static CollectiveAuthenticationPlugin cap = null;
+    public static final String KEY_COLLECTIVE_AUTHENTICATON_PLUGIN = "collectiveAuthenticationPlugin";
 
     private final AtomicServiceReference<AuthCacheService> authCacheServiceRef = new AtomicServiceReference<AuthCacheService>(KEY_AUTH_CACHE_SERVICE);
     private final AtomicServiceReference<UserRegistryService> userRegistryServiceRef = new AtomicServiceReference<UserRegistryService>(KEY_USER_REGISTRY_SERVICE);
     private final AtomicServiceReference<DelegationProvider> delegationProviderRef = new AtomicServiceReference<DelegationProvider>(KEY_DELEGATION_PROVIDER);
     private final AtomicServiceReference<DelegationProvider> defaultDelegationProviderRef = new AtomicServiceReference<DelegationProvider>(KEY_DEFAULT_DELEGATION_PROVIDER);
     private final AtomicServiceReference<CredentialsService> credentialsServiceRef = new AtomicServiceReference<CredentialsService>(KEY_CREDENTIALS_SERVICE);
+    private static final AtomicServiceReference<CollectiveAuthenticationPlugin> collectiveAuthenticationPlugin = new AtomicServiceReference<CollectiveAuthenticationPlugin>(KEY_COLLECTIVE_AUTHENTICATON_PLUGIN);
     private JAASService jaasService;
     private ComponentContext cc;
     private boolean cacheEnabled = true;
@@ -77,6 +88,7 @@ public class AuthenticationServiceImpl implements AuthenticationService {
     private String invalidDelegationUser = "";
 
     private final AuthenticationGuard authenticationGuard = new AuthenticationGuard();
+    
 
     protected void setJaasService(JAASService jaasService) {
         this.jaasService = jaasService;
@@ -211,6 +223,10 @@ public class AuthenticationServiceImpl implements AuthenticationService {
             }
         } finally {
             releaseLock(authenticationData, currentLock);
+            //OLGH8933: Reset Threadlocal flag used to limit Collective certificate Subject caching.
+            if (cap != null) {
+                cap.setCacheCollectiveCertificate(false);
+            }
         }
     }
 
@@ -225,6 +241,20 @@ public class AuthenticationServiceImpl implements AuthenticationService {
         return result;
     }
 
+    @Reference(service = CollectiveAuthenticationPlugin.class,
+                    name = KEY_COLLECTIVE_AUTHENTICATON_PLUGIN,
+                    policy = ReferencePolicy.DYNAMIC,
+                    policyOption = ReferencePolicyOption.GREEDY)
+         public void setCollectiveAuthenticationPlugin(CollectiveAuthenticationPlugin cap) {
+             this.cap = cap;
+         }
+
+         public void unsetCollectiveAuthenticationPlugin(CollectiveAuthenticationPlugin cap) {
+             if (cap == this.cap) {
+                 this.cap = null;
+             }
+         }
+    
     private Subject createBasicAuthSubject(AuthenticationData authenticationData, Subject subject) throws AuthenticationException {
         Subject basicAuthSubject = subject != null ? subject : new Subject();
 
@@ -329,12 +359,17 @@ public class AuthenticationServiceImpl implements AuthenticationService {
                 if (ssoTokenBytes != null) {
                     subject = findSubjectByTokenContents(authCacheService, null, ssoTokenBytes, authenticationData);
                 } else {
-                    String userid = (String) authenticationData.get(AuthenticationData.USERNAME);
-                    String password = getPassword((char[]) authenticationData.get(AuthenticationData.PASSWORD));
-                    if (userid != null && password != null) {
-                        subject = findSubjectByUseridAndPassword(authCacheService, userid, password);
-                    } else if (partialSubject != null) {
-                        subject = findSubjectBySubjectHashtable(authCacheService, partialSubject);
+                    X509Certificate[] certChain = (X509Certificate[])authenticationData.get(AuthenticationData.CERTCHAIN);
+                    if (certChain != null) {
+                        subject = findSubjectByX509Cert(authCacheService, certChain);
+                    } else {
+                        String userid = (String) authenticationData.get(AuthenticationData.USERNAME);
+                        String password = getPassword((char[]) authenticationData.get(AuthenticationData.PASSWORD));
+                        if (userid != null && password != null) {
+                            subject = findSubjectByUseridAndPassword(authCacheService, userid, password);
+                        } else if (partialSubject != null) {
+                            subject = findSubjectBySubjectHashtable(authCacheService, partialSubject);
+                        }
                     }
                 }
             }
@@ -342,6 +377,12 @@ public class AuthenticationServiceImpl implements AuthenticationService {
         return subject;
     }
 
+    private Subject findSubjectByX509Cert(AuthCacheService authCacheService, X509Certificate[] certChain) {
+        int certHash = ((java.security.cert.Certificate) certChain[0]).hashCode();
+        return authCacheService.getSubject(certHash);
+    }
+
+    
     /**
      * @param authCacheService An authentication cache service
      * @param token The cache key, can be either a byte[] (SSO Token) or String (SSO Token Base64 encoded)
@@ -506,7 +547,11 @@ public class AuthenticationServiceImpl implements AuthenticationService {
             if (userid != null && password != null) {
                 authCacheService.insert(authenticatedSubject, userid, password);
             } else {
-                authCacheService.insert(authenticatedSubject);
+                if (AuthenticationData.CERTCHAIN != null) {
+                    authCacheService.insert(authenticatedSubject, (X509Certificate[])authenticationData.get(AuthenticationData.CERTCHAIN));
+                } else {
+                    authCacheService.insert(authenticatedSubject);
+                }
             }
         }
     }

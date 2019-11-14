@@ -31,6 +31,8 @@ import com.ibm.ws.security.authentication.collective.CollectiveAuthenticationPlu
            configurationPolicy = ConfigurationPolicy.IGNORE,
            property = { "service.vendor=IBM", "name=NullCollectiveAuthenticationPlugin", "service.ranking:Integer=-1" })
 public class NullCollectiveAuthenticationPlugin implements CollectiveAuthenticationPlugin {
+    
+    private static ThreadLocal<Boolean> cacheCollectiveCertificate = new ThreadLocal<Boolean>();
 
     @Activate
     protected void activate() {}
@@ -64,6 +66,15 @@ public class NullCollectiveAuthenticationPlugin implements CollectiveAuthenticat
     @Override
     public boolean isCollectiveCACertificate(X509Certificate[] certChain) {
         return false;
+    }
+    
+    public void setCacheCollectiveCertificate(boolean b) {
+        cacheCollectiveCertificate.set(b);
+    }
+
+    public boolean shouldCacheCollectiveCertificate() {
+        boolean result = cacheCollectiveCertificate.get() != null ? cacheCollectiveCertificate.get() : false;
+        return result;
     }
 
 }

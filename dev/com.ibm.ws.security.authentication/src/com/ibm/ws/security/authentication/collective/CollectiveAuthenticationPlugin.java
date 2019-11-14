@@ -49,4 +49,23 @@ public interface CollectiveAuthenticationPlugin {
      */
     void authenticateCertificateChain(X509Certificate certChain[], boolean collectiveCert) throws AuthenticationException;
 
+    /**
+     * OLGH8933 adds the capability to cache Subjects created via a certificate login. However, we never want to cache Collective certificate Subjects.
+     * Caching creates problems for processing when CollectiveAuthenticationPluginImpl.isFlaggedForNoLogin=true.
+     * Once the Subject is cached, that check is no longer performed. For now, every Collective certificate login
+     * will not cache the Subject to ensure NOLOGIN is enforced.
+     * @return True: Cache Collective certificate Subjects. 
+     *         False: Don't cache Collective certificate Subjects.
+     */
+    boolean shouldCacheCollectiveCertificate();
+    
+    /**
+     * OLGH8933 adds the capability to cache Subjects created via a certificate login. However, we never want to cache Collective certificate Subjects.
+     * Caching creates problems for processing when CollectiveAuthenticationPluginImpl.isFlaggedForNoLogin=true.
+     * Once the Subject is cached, that check is no longer performed. For now, every Collective certificate login
+     * will not cache the Subject to ensure NOLOGIN is enforced.
+     * @param  True: Cache Collective certificate Subjects. 
+     *         False: Don't cache Collective certificate Subjects.
+     */
+    void setCacheCollectiveCertificate(boolean ccc);
 }
